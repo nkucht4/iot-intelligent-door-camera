@@ -8,16 +8,21 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "driver/gpio.h" 
+#include <sys/socket.h>
+#include <netdb.h>
+#include "esp_wifi.h"
 
 #define WIFI_SSID      "ssid"
-#define WIFI_PASS      "pass"
+#define WIFI_PASS      "passwd"
 static const char *TAG = "wifi_station";
+#define WEB_SERVER "example.com"
+#define WEB_PORT "80"
+#define WEB_PATH "/"
 
 #define LED_GPIO 33
 
-static bool wifi_connected = false;
+static volatile bool wifi_connected = false;
 
-// Forward declarations
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 static void blink_task(void* arg);
 
@@ -74,17 +79,43 @@ void app_main(void)
 
 }
 
-// Blink task
 static void blink_task(void* arg)
 {
     while (1) {
         if (!wifi_connected){
-        gpio_set_level(LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_set_level(LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(500));
+            gpio_set_level(LED_GPIO, 1);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            gpio_set_level(LED_GPIO, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        else{
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
+}
+
+static void htttp_request(){
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res;
+    getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res);
+
+    int sock = socket(res->ai_family, res->ai_socktype, 0);
+    connect(sock, res->ai_addr, res->ai_addrlen);
+
+    char request[128];
+    sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", WEB_PATH, WEB_SERVER);
+    send(sock, request, strlen(request), 0);
+
+    char recv_buf[512];
+    int len;
+    while ((len = recv(sock, recv_buf, sizeof(recv_buf)-1, 0)) > 0) {
+        recv_buf[len] = 0;
+        printf("%s", recv_buf);
+    }
+
+    close(sock);
+    freeaddrinfo(res);
+    ESP_LOGI(TAG, "Done!");
 }
 
 static void event_handler(void* arg, esp_event_base_t event_base,
@@ -96,15 +127,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI("wifi", "Disconnected...");
         wifi_connected = false;
-        /*gpio_set_level(LED_GPIO, 1); 
-        vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_set_level(LED_GPIO, 0); 
-        vTaskDelay(pdMS_TO_TICKS(500));*/
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI("wifi", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         gpio_set_level(LED_GPIO, 1); 
         wifi_connected = true;
+        htttp_request();
     }
 }
