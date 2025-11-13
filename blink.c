@@ -12,8 +12,8 @@
 #include <netdb.h>
 #include "esp_wifi.h"
 
-#define WIFI_SSID      "ssid"
-#define WIFI_PASS      "passwd"
+#define WIFI_SSID      "HotspotOK"
+#define WIFI_PASS      "test_iot"
 static const char *TAG = "wifi_station";
 #define WEB_SERVER "example.com"
 #define WEB_PORT "80"
@@ -21,7 +21,8 @@ static const char *TAG = "wifi_station";
 
 #define LED_GPIO 33
 
-static volatile bool wifi_connected = false;
+EventGroupHandle_t wifi_eventgroup;
+const EventBits_t WF1_BIT = BIT0;
 
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 static void blink_task(void* arg);
@@ -38,6 +39,8 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    wifi_eventgroup = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -57,7 +60,7 @@ void app_main(void)
                                                         NULL,
                                                         NULL));
 
-    wifi_config_t wifi_config = {
+    wifi_config_t wifi_config = { //konfiguracja polaczenia
         .sta = {
             .ssid = WIFI_SSID,
             .password = WIFI_PASS,
@@ -81,39 +84,41 @@ void app_main(void)
 
 static void blink_task(void* arg)
 {
-    while (1) {
-        if (!wifi_connected){
-            gpio_set_level(LED_GPIO, 1);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            gpio_set_level(LED_GPIO, 0);
-            vTaskDelay(pdMS_TO_TICKS(500));
+    EventBits_t wifi;
+    bool led_on = false;
+    while (1){
+        wifi = xEventGroupWaitBits(wifi_eventgroup, WF1_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+
+        while (xEventGroupGetBits(wifi_eventgroup) & WF1_BIT) {
+            led_on = !led_on;
+            gpio_set_level(LED_GPIO, led_on);
+            vTaskDelay(300);
         }
-        else{
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
+
+        gpio_set_level(LED_GPIO, 0);
     }
 }
 
-static void htttp_request(){
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+static void htttp_request(){ 
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }; // przygotowanie do laczenia TCP
     struct addrinfo *res;
-    getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res);
+    getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res); // zmiana adresu example.com na adres IP , dns to do blad
 
-    int sock = socket(res->ai_family, res->ai_socktype, 0);
-    connect(sock, res->ai_addr, res->ai_addrlen);
+    int sock = socket(res->ai_family, res->ai_socktype, 0); // tworzymy gniazdo TCP
+    connect(sock, res->ai_addr, res->ai_addrlen); // nawiazanie polaczenia TCP z serwerem 
 
-    char request[128];
+    char request[128]; // wysylanie zapytania http
     sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", WEB_PATH, WEB_SERVER);
     send(sock, request, strlen(request), 0);
 
-    char recv_buf[512];
+    char recv_buf[512]; // odbior odpowiedzi i wypisanie 
     int len;
     while ((len = recv(sock, recv_buf, sizeof(recv_buf)-1, 0)) > 0) {
         recv_buf[len] = 0;
         printf("%s", recv_buf);
     }
 
-    close(sock);
+    close(sock); // cleaning 
     freeaddrinfo(res);
     ESP_LOGI(TAG, "Done!");
 }
@@ -126,13 +131,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         gpio_set_level(LED_GPIO, 0); 
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI("wifi", "Disconnected...");
-        wifi_connected = false;
+        xEventGroupSetBits(wifi_eventgroup, WF1_BIT);
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI("wifi", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        gpio_set_level(LED_GPIO, 1); 
-        wifi_connected = true;
+        xEventGroupClearBits(wifi_eventgroup, WF1_BIT);
         htttp_request();
     }
 }
