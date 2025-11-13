@@ -3,6 +3,9 @@
 /sdkconfig
 /sdkconfig.old
 
+Kconfig
+Kconfig*
+
 *.o
 *.obj
 *.elf
