@@ -12,8 +12,8 @@
 #include <netdb.h>
 #include "esp_wifi.h"
 
-#define WIFI_SSID      "HotspotOK"
-#define WIFI_PASS      "test_iot"
+#define WIFI_SSID      "SSID_IOT"
+#define WIFI_PASS      "PASSWORD_IOT"
 static const char *TAG = "wifi_station";
 #define WEB_SERVER "example.com"
 #define WEB_PORT "80"
@@ -100,16 +100,40 @@ static void blink_task(void* arg)
 }
 
 static void htttp_request(){ 
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }; // przygotowanie do laczenia TCP
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }; 
     struct addrinfo *res;
-    getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res); // zmiana adresu example.com na adres IP , dns to do blad
 
-    int sock = socket(res->ai_family, res->ai_socktype, 0); // tworzymy gniazdo TCP
-    connect(sock, res->ai_addr, res->ai_addrlen); // nawiazanie polaczenia TCP z serwerem 
+    getaddrinfo(WEB_SERVER, WEB_PORT, &hints, &res); 
+
+    if (err != 0) {
+        ESP_LOGE(TAG, "getaddrinfo failed: %s", gai_strerror(err));
+        return; 
+    }
+
+    int sock = socket(res->ai_family, res->ai_socktype, 0); 
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create socket: errno %d", errno);
+        freeaddrinfo(res);
+        return;
+    }
+
+    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
+        ESP_LOGE(TAG, "Socket connect failed: errno %d", errno);
+        close(sock);
+        freeaddrinfo(res);
+        return;
+    }
 
     char request[128]; // wysylanie zapytania http
     sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", WEB_PATH, WEB_SERVER);
-    send(sock, request, strlen(request), 0);
+    ssize_t sent = send(sock, request, strlen(request), 0);
+
+    if (sent < 0) {
+        ESP_LOGE(TAG, "Failed to send request: errno %d", errno);
+        close(sock);
+        freeaddrinfo(res);
+        return;
+    }
 
     char recv_buf[512]; // odbior odpowiedzi i wypisanie 
     int len;
