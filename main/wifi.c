@@ -1,3 +1,7 @@
+#include <stdint.h>    
+#include <sys/types.h>  
+#include <sys/select.h> 
+#include "wifi.h"
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -5,15 +9,15 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
 #include "esp_netif.h"
 #include "driver/gpio.h" 
 #include <sys/socket.h>
 #include <netdb.h>
 #include "esp_wifi.h"
+#include "sdkconfig.h"
 
-#define WIFI_SSID      "SSID_IOT"
-#define WIFI_PASS      "PASSWORD_IOT"
+#define WIFI_SSID      CONFIG_WIFI_SSID
+#define WIFI_PASS      CONFIG_WIFI_PASSWORD
 static const char *TAG = "wifi_station";
 #define WEB_SERVER "example.com"
 #define WEB_PORT "80"
@@ -21,24 +25,17 @@ static const char *TAG = "wifi_station";
 
 #define LED_GPIO 33
 
-EventGroupHandle_t wifi_eventgroup;
+EventGroupHandle_t wifi_eventgroup; 
 const EventBits_t WF1_BIT = BIT0;
 
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 static void blink_task(void* arg);
 
 
-void app_main(void)
+void wifi_init(void)
 {
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-
-    esp_err_t ret = nvs_flash_init();           
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
 
     wifi_eventgroup = xEventGroupCreate();
 
@@ -75,10 +72,6 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
-
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
 
 }
 
@@ -156,11 +149,13 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI("wifi", "Disconnected...");
         xEventGroupSetBits(wifi_eventgroup, WF1_BIT);
+        xEventGroupClearBits(wifi_eventgroup, WIFI_CONNECTED_BIT);
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI("wifi", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupClearBits(wifi_eventgroup, WF1_BIT);
+        xEventGroupSetBits(wifi_eventgroup, WIFI_CONNECTED_BIT);
         htttp_request();
     }
 }
