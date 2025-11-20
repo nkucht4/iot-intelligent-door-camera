@@ -48,12 +48,11 @@ static const char *TAG = "LAB31_HID";
 static uint8_t hid_info_value[4] = { 0x11, 0x01, 0x00, 0x02 }; // bcdHID 1.11, country 0, flags
 static uint8_t protocol_mode = 1; // report mode (1)
 
-/* Report Map: includes Report ID 1 (keyboard) and Report ID 2 (simple vendor)
-   This map is compatible with Windows/macOS and with nRF Connect view requested. */
+/* Report Map: includes Report ID 1 (keyboard) and Report ID 2 (simple vendor) */
 static uint8_t report_map[] = {
     // Report ID 1 - Keyboard (mod + reserved + 6 keys)
     0x05,0x01, 0x09,0x06, 0xA1,0x01,
-      0x85,0x01,                       // Report ID 1
+      0x85,0x01,
       0x05,0x07, 0x19,0xE0, 0x29,0xE7, 0x15,0x00, 0x25,0x01, 0x75,0x01, 0x95,0x08, 0x81,0x02,
       0x95,0x01, 0x75,0x08, 0x81,0x03,
       0x95,0x05, 0x75,0x01, 0x05,0x08, 0x19,0x01, 0x29,0x05, 0x91,0x02,
@@ -63,7 +62,7 @@ static uint8_t report_map[] = {
 
     // Report ID 2 - Vendor/extra input (simple)
     0x05,0x01, 0x09,0x06, 0xA1,0x01,
-      0x85,0x02,                    // Report ID 2
+      0x85,0x02,
       0x09,0x00, 0x15,0x00, 0x25,0xFF, 0x75,0x08, 0x95,0x04, 0x81,0x02,
     0xC0
 };
@@ -120,6 +119,9 @@ struct hid_handles_t {
 
     uint16_t gatts_if;
     uint16_t conn_id;
+
+    int added_chars;
+    int added_descr;
 } hid = {0};
 
 /* helper to create 16-bit uuid obj */
@@ -141,7 +143,7 @@ static void send_random_key_reports(void)
     uint8_t mod = (uint8_t)(rand() & 0x07);       // demo: some modifier bits
     uint8_t key = 0x04 + (rand() % 26);          // a..z usage codes
 
-    // REPORT ID 1 payload: first byte = Report ID (1), following payload sized as added (we send 8 bytes)
+    // REPORT ID 1 payload: first byte = Report ID (1)
     uint8_t report1_payload[8];
     memset(report1_payload, 0, sizeof(report1_payload));
     report1_payload[0] = 0x01;   // Report ID 1
@@ -190,6 +192,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 {
     if (event == ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT) {
         esp_ble_gap_start_advertising(&adv_params);
+        ESP_LOGI(TAG, "Advertising started");
     }
 }
 
@@ -197,21 +200,24 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
     switch (event) {
-    case ESP_GATTS_REG_EVT:
+    case ESP_GATTS_REG_EVT: {
         ESP_LOGI(TAG, "GATTS_REG_EVT");
         hid.gatts_if = gatts_if;
         hid.conn_id = 0xFFFF;
-        {
-            esp_ble_gap_set_device_name("LAB31 - KEYBOARD");
-            esp_ble_gap_config_adv_data(&adv_data);
-            esp_ble_gatts_create_service(gatts_if, &(esp_gatt_srvc_id_t){
-                .is_primary = true,
-                .id = {.inst_id = 0, .uuid = {.len = ESP_UUID_LEN_16, .uuid = {.uuid16 = HID_SERVICE_UUID}}}
-            }, GATTS_NUM_HANDLE);
-        }
-        break;
+        hid.added_chars = 0;
+        hid.added_descr = 0;
 
-    case ESP_GATTS_CREATE_EVT:
+        esp_ble_gap_set_device_name("LAB31 - KEYBOARD");
+        esp_ble_gap_config_adv_data(&adv_data);
+
+        esp_ble_gatts_create_service(gatts_if, &(esp_gatt_srvc_id_t){
+            .is_primary = true,
+            .id = {.inst_id = 0, .uuid = {.len = ESP_UUID_LEN_16, .uuid = {.uuid16 = HID_SERVICE_UUID}}}
+        }, GATTS_NUM_HANDLE);
+        break;
+    }
+
+    case ESP_GATTS_CREATE_EVT: {
         ESP_LOGI(TAG, "GATTS_CREATE_EVT svc_handle=%d", param->create.service_handle);
         hid.service_handle = param->create.service_handle;
 
@@ -273,32 +279,92 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         }
 
         break;
+    }
 
     case ESP_GATTS_ADD_CHAR_EVT: {
-        ESP_LOGI(TAG, "ADD_CHAR_EVT handle=%d uuid=0x%04x", param->add_char.attr_handle, param->add_char.char_uuid.uuid.uuid16);
-        static int added = 0;
-        added++;
-        if (added == 1) hid.hid_info_handle = param->add_char.attr_handle;
-        else if (added == 2) hid.protocol_mode_handle = param->add_char.attr_handle;
-        else if (added == 3) hid.report_map_handle = param->add_char.attr_handle;
-        else if (added == 4) hid.report1_handle = param->add_char.attr_handle;
-        else if (added == 5) hid.report2_handle = param->add_char.attr_handle;
-        else if (added == 6) hid.report3_handle = param->add_char.attr_handle;
-        else if (added == 7) hid.boot_input_handle = param->add_char.attr_handle;
-        else if (added == 8) hid.boot_output_handle = param->add_char.attr_handle;
+        uint16_t uuid16 = param->add_char.char_uuid.uuid.uuid16;
+        hid.added_chars++;
+        ESP_LOGI(TAG, "ADD_CHAR_EVT handle=%d uuid=0x%04x added_count=%d", param->add_char.attr_handle, uuid16, hid.added_chars);
+
+        if (uuid16 == HID_INFO_CHAR_UUID) {
+            hid.hid_info_handle = param->add_char.attr_handle;
+            // no descriptors
+        } else if (uuid16 == PROTOCOL_MODE_UUID) {
+            hid.protocol_mode_handle = param->add_char.attr_handle;
+            // no descriptors
+        } else if (uuid16 == REPORT_MAP_UUID) {
+            hid.report_map_handle = param->add_char.attr_handle;
+            // no descriptors
+        } else if (uuid16 == REPORT_CHAR_UUID) {
+            // There are three Report chars added in sequence; we need to disambiguate by order:
+            // - first REPORT_CHAR we encounter -> Report1 (ID1) -> add CCCD + Report Reference (ID=1, type=input)
+            // - second -> Report2 (ID2) -> add CCCD + Report Reference (ID=2, type=input)
+            // - third -> Report3 (configurable) -> add Report Reference (ID=3, type=output or vendor - we use input(1)/output(2) as needed)
+            if (!hid.report1_handle) {
+                hid.report1_handle = param->add_char.attr_handle;
+                // add CCCD
+                esp_bt_uuid_t cccd = mk_uuid16(CLIENT_CHAR_CFG_UUID);
+                esp_attr_value_t cccd_attr = { .attr_max_len = 2, .attr_len = 0, .attr_value = NULL };
+                esp_ble_gatts_add_char_descr(hid.service_handle, &cccd, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, &cccd_attr, NULL);
+                // add Report Reference (ID=1, type=1=input)
+                uint8_t ref1[2] = { 0x01, 0x01 };
+                esp_bt_uuid_t rr = mk_uuid16(REPORT_REF_DESC_UUID);
+                esp_attr_value_t rr_attr = { .attr_max_len = 2, .attr_len = 2, .attr_value = ref1 };
+                esp_ble_gatts_add_char_descr(hid.service_handle, &rr, ESP_GATT_PERM_READ, &rr_attr, NULL);
+            } else if (!hid.report2_handle) {
+                hid.report2_handle = param->add_char.attr_handle;
+                esp_bt_uuid_t cccd = mk_uuid16(CLIENT_CHAR_CFG_UUID);
+                esp_attr_value_t cccd_attr = { .attr_max_len = 2, .attr_len = 0, .attr_value = NULL };
+                esp_ble_gatts_add_char_descr(hid.service_handle, &cccd, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, &cccd_attr, NULL);
+                uint8_t ref2[2] = { 0x02, 0x01 };
+                esp_bt_uuid_t rr = mk_uuid16(REPORT_REF_DESC_UUID);
+                esp_attr_value_t rr_attr = { .attr_max_len = 2, .attr_len = 2, .attr_value = ref2 };
+                esp_ble_gatts_add_char_descr(hid.service_handle, &rr, ESP_GATT_PERM_READ, &rr_attr, NULL);
+            } else {
+                hid.report3_handle = param->add_char.attr_handle;
+                // report3: add report reference only (e.g. ID=3, type=2 (output) or 1 (input) — pick 0x03, type=0x02 if it's output/config)
+                uint8_t ref3[2] = { 0x03, 0x02 }; // choose type 2 (output) to indicate writable report
+                esp_bt_uuid_t rr = mk_uuid16(REPORT_REF_DESC_UUID);
+                esp_attr_value_t rr_attr = { .attr_max_len = 2, .attr_len = 2, .attr_value = ref3 };
+                esp_ble_gatts_add_char_descr(hid.service_handle, &rr, ESP_GATT_PERM_READ, &rr_attr, NULL);
+            }
+        } else if (uuid16 == BOOT_KEYBOARD_INPUT_UUID) {
+            hid.boot_input_handle = param->add_char.attr_handle;
+            // add CCCD for notify
+            esp_bt_uuid_t cccd = mk_uuid16(CLIENT_CHAR_CFG_UUID);
+            esp_attr_value_t cccd_attr = { .attr_max_len = 2, .attr_len = 0, .attr_value = NULL };
+            esp_ble_gatts_add_char_descr(hid.service_handle, &cccd, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, &cccd_attr, NULL);
+        } else if (uuid16 == BOOT_KEYBOARD_OUTPUT_UUID) {
+            hid.boot_output_handle = param->add_char.attr_handle;
+            // no descriptor
+        } else {
+            ESP_LOGW(TAG, "Unknown char UUID added: 0x%04x", uuid16);
+        }
         break;
     }
 
     case ESP_GATTS_ADD_CHAR_DESCR_EVT: {
-        ESP_LOGI(TAG, "ADD_CHAR_DESCR_EVT handle=%d", param->add_char_descr.attr_handle);
-        static int descr_added = 0;
-        descr_added++;
-        if (descr_added == 1) hid.report1_cccd_handle = param->add_char_descr.attr_handle;
-        else if (descr_added == 2) hid.report1_report_ref_handle = param->add_char_descr.attr_handle;
-        else if (descr_added == 3) hid.report2_cccd_handle = param->add_char_descr.attr_handle;
-        else if (descr_added == 4) hid.report2_report_ref_handle = param->add_char_descr.attr_handle;
-        else if (descr_added == 5) hid.report3_report_ref_handle = param->add_char_descr.attr_handle;
-        else if (descr_added == 6) hid.boot_input_cccd_handle = param->add_char_descr.attr_handle;
+        hid.added_descr++;
+        ESP_LOGI(TAG, "ADD_CHAR_DESCR_EVT handle=%d added_descr=%d", param->add_char_descr.attr_handle, hid.added_descr);
+
+        // Map descriptors in the expected order:
+        // 1) report1 CCCD
+        // 2) report1 report_ref
+        // 3) report2 CCCD
+        // 4) report2 report_ref
+        // 5) report3 report_ref
+        // 6) boot_input CCCD
+        if (hid.added_descr == 1) hid.report1_cccd_handle = param->add_char_descr.attr_handle;
+        else if (hid.added_descr == 2) hid.report1_report_ref_handle = param->add_char_descr.attr_handle;
+        else if (hid.added_descr == 3) hid.report2_cccd_handle = param->add_char_descr.attr_handle;
+        else if (hid.added_descr == 4) hid.report2_report_ref_handle = param->add_char_descr.attr_handle;
+        else if (hid.added_descr == 5) hid.report3_report_ref_handle = param->add_char_descr.attr_handle;
+        else if (hid.added_descr == 6) {
+            hid.boot_input_cccd_handle = param->add_char_descr.attr_handle;
+            // After we have added all descriptors (6 expected), start the service
+            ESP_LOGI(TAG, "All descriptors added -> starting service");
+            esp_ble_gatts_start_service(hid.service_handle);
+        }
         break;
     }
 
@@ -357,6 +423,16 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         if (param->write.handle == hid.report3_handle) {
             ESP_LOGI(TAG, "Report3 written, len=%d", param->write.len);
             ESP_LOG_BUFFER_HEX(TAG, param->write.value, param->write.len);
+            if (param->write.need_rsp) esp_ble_gatts_send_response(hid.gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+            break;
+        }
+
+        // Protocol Mode write (write without response maybe)
+        if (param->write.handle == hid.protocol_mode_handle) {
+            if (param->write.len >= 1) {
+                protocol_mode = param->write.value[0];
+                ESP_LOGI(TAG, "Protocol mode set to %d", protocol_mode);
+            }
             if (param->write.need_rsp) esp_ble_gatts_send_response(hid.gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
             break;
         }
@@ -427,7 +503,6 @@ void app_main(void)
     // init hid struct defaults
     hid.conn_id = 0xFFFF;
     hid.gatts_if = 0;
-    hid.report1_cccd_handle = 0;
-    hid.report2_cccd_handle = 0;
-    hid.boot_input_cccd_handle = 0;
+    hid.added_chars = 0;
+    hid.added_descr = 0;
 }
