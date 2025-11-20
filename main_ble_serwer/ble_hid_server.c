@@ -714,7 +714,7 @@ void app_main(void)
 
     //security
     esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM;  // Basic bonding without Secure Connections
-    esp_ble_io_cap_t iocap = ESP_IO_CAP_IO;
+    esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;
     uint8_t key_size = 16;
     uint8_t oob_support = ESP_BLE_OOB_DISABLE;
 
